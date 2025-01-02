@@ -16,7 +16,7 @@ LEG4B_CHANNEL = 11 # Back Right Backward
 
 def setup():
     """Initialize default servo positions."""
-    set_all_servos(180)
+    set_all_servos(90)
 
 def set_all_servos(angle):
     """Set all servos to the same angle."""
