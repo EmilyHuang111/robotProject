@@ -15,11 +15,11 @@ LEG4F_CHANNEL = 10 # Back Right Forward
 LEG4B_CHANNEL = 11 # Back Right Backward
 
 # Variables for angles
-TOLeg1F, TOLeg1B, TOLeg2F, TOLeg2B = 20, 20, 20, 20
-TOLeg3F, TOLeg3B, TOLeg4F, TOLeg4B = 20, 20, 20, 20
+TOLeg1F, TOLeg1B, TOLeg2F, TOLeg2B = 90,90,90,90
+TOLeg3F, TOLeg3B, TOLeg4F, TOLeg4B = 90,90,90,90
 
-LALeg1F, LALeg1B, LALeg2F, LALeg2B = 20, 20, 20, 20
-LALeg3F, LALeg3B, LALeg4F, LALeg4B = 20, 20, 20, 20
+LALeg1F, LALeg1B, LALeg2F, LALeg2B = 90,90,90,90
+LALeg3F, LALeg3B, LALeg4F, LALeg4B = 90,90,90,90
 
 # Walking parameters
 walkF = [
@@ -38,7 +38,7 @@ smoothdelay = 2  # Smooth movement delay (milliseconds)
 
 def setup():
     # Initialize default positions
-    set_all_servos(20)
+    set_all_servos(90)
 
 def set_all_servos(angle):
     """Set all servos to the same angle."""
