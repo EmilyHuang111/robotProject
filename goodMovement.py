@@ -19,8 +19,8 @@ DEFAULT_FORWARD_ANGLE = 90  # Neutral position (adjust if needed)
 DEFAULT_BACKWARD_ANGLE = 90  # Neutral position (adjust if needed)
 
 # Forward and backward movement angles
-FORWARD_ANGLE = 60  # Angle to move leg forward (within 0-180)
-BACKWARD_ANGLE = 120  # Angle to move leg backward (within 0-180)
+FORWARD_ANGLE = 30  # Angle to move leg forward (within 0-180)
+BACKWARD_ANGLE = 150  # Angle to move leg backward (within 0-180)
 
 def setup():
     """Initialize default servo positions."""
