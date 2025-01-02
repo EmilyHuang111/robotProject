@@ -44,13 +44,13 @@ def move_leg_forward(forward_channel, backward_channel):
     """Move a single leg forward."""
     kit.servo[forward_channel].angle = FORWARD_ANGLE
     kit.servo[backward_channel].angle = DEFAULT_BACKWARD_ANGLE
-    time.sleep(0.1)  # Adjust for smoother movement
+    time.sleep(0.2)  # Adjust for smoother movement
 
 def move_leg_backward(forward_channel, backward_channel):
     """Move a single leg backward."""
     kit.servo[forward_channel].angle = DEFAULT_FORWARD_ANGLE
     kit.servo[backward_channel].angle = BACKWARD_ANGLE
-    time.sleep(0.1)
+    time.sleep(0.2)
 
 def walk_forward():
     """Make the robot walk forward with a simple gait."""
