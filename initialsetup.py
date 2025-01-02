@@ -5,14 +5,14 @@ from adafruit_servokit import ServoKit
 kit = ServoKit(channels=16)
 
 # Define servo channels
-LEG1F_CHANNEL = 0  # Front Left Forward
-LEG1B_CHANNEL = 1  # Front Left Backward
-LEG2F_CHANNEL = 8  # Front Right Forward
-LEG2B_CHANNEL = 9  # Front Right Backward
-LEG3F_CHANNEL = 2  # Back Left Forward
-LEG3B_CHANNEL = 3  # Back Left Backward
-LEG4F_CHANNEL = 10 # Back Right Forward
-LEG4B_CHANNEL = 11 # Back Right Backward
+LEG1B_CHANNEL = 0  
+LEG1F_CHANNEL = 1 
+LEG2B_CHANNEL = 8  
+LEG2F_CHANNEL = 9  
+LEG3B_CHANNEL = 2 
+LEG3F_CHANNEL = 3  
+LEG4F_CHANNEL = 10 
+LEG4B_CHANNEL = 11 
 
 def setup():
     """Initialize default servo positions."""
