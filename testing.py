@@ -3,7 +3,7 @@ from adafruit_servokit import ServoKit
 
 kit = ServoKit(channels=16)
 
-# Define servo channels
+
 LEG1F_CHANNEL = 0  
 LEG1B_CHANNEL = 1 
 LEG2F_CHANNEL = 8  
