@@ -27,6 +27,9 @@ DEFAULT_BACKWARD_ANGLE = 90
 FORWARD_ANGLE = 60
 BACKWARD_ANGLE = 120
 
+# Movement control flag
+movement_flag = {'forward': False}
+
 # Setup the default positions
 def setup():
     print("Setting all servos to default positions...")
@@ -57,27 +60,16 @@ def move_leg_backward(forward_channel, backward_channel):
 # Gait functions
 def walk_forward():
     print("Walking forward...")
-    move_leg_forward(LEG1F_CHANNEL, LEG1B_CHANNEL)
-    move_leg_forward(LEG4F_CHANNEL, LEG4B_CHANNEL)
-    move_leg_backward(LEG2F_CHANNEL, LEG2B_CHANNEL)
-    move_leg_backward(LEG3F_CHANNEL, LEG3B_CHANNEL)
-    move_leg_backward(LEG1F_CHANNEL, LEG1B_CHANNEL)
-    move_leg_backward(LEG4F_CHANNEL, LEG4B_CHANNEL)
-    move_leg_forward(LEG2F_CHANNEL, LEG2B_CHANNEL)
-    move_leg_forward(LEG3F_CHANNEL, LEG3B_CHANNEL)
-    print("Step complete.")
-
-def walk_backward():
-    print("Walking backward...")
-    # Implement similar logic for backward walking
-
-def turn_left():
-    print("Turning left...")
-    # Implement turning logic
-
-def turn_right():
-    print("Turning right...")
-    # Implement turning logic
+    while movement_flag['forward']:
+        move_leg_forward(LEG1F_CHANNEL, LEG1B_CHANNEL)
+        move_leg_forward(LEG4F_CHANNEL, LEG4B_CHANNEL)
+        move_leg_backward(LEG2F_CHANNEL, LEG2B_CHANNEL)
+        move_leg_backward(LEG3F_CHANNEL, LEG3B_CHANNEL)
+        move_leg_backward(LEG1F_CHANNEL, LEG1B_CHANNEL)
+        move_leg_backward(LEG4F_CHANNEL, LEG4B_CHANNEL)
+        move_leg_forward(LEG2F_CHANNEL, LEG2B_CHANNEL)
+        move_leg_forward(LEG3F_CHANNEL, LEG3B_CHANNEL)
+        print("Step complete.")
 
 # Flask endpoints
 @app.route('/')
@@ -90,6 +82,7 @@ def index():
         <style>
             body { text-align: center; font-family: Arial, sans-serif; }
             button { font-size: 20px; margin: 10px; padding: 15px; }
+            .stop-btn { background-color: red; color: white; }
         </style>
     </head>
     <body>
@@ -97,7 +90,8 @@ def index():
         <button onclick="sendCommand('forward')">Move Forward</button><br>
         <button onclick="sendCommand('left')">Turn Left</button>
         <button onclick="sendCommand('right')">Turn Right</button><br>
-        <button onclick="sendCommand('backward')">Move Backward</button>
+        <button onclick="sendCommand('backward')">Move Backward</button><br>
+        <button class="stop-btn" onclick="sendCommand('stop')">Stop</button>
         <script>
             function sendCommand(command) {
                 fetch('/' + command);
@@ -109,23 +103,15 @@ def index():
 
 @app.route('/forward')
 def forward():
+    movement_flag['forward'] = True
     Thread(target=walk_forward).start()
     return "Moving forward!"
 
-@app.route('/backward')
-def backward():
-    Thread(target=walk_backward).start()
-    return "Moving backward!"
-
-@app.route('/left')
-def left():
-    Thread(target=turn_left).start()
-    return "Turning left!"
-
-@app.route('/right')
-def right():
-    Thread(target=turn_right).start()
-    return "Turning right!"
+@app.route('/stop')
+def stop():
+    movement_flag['forward'] = False
+    set_all_servos(DEFAULT_FORWARD_ANGLE)
+    return "Stopping all movements!"
 
 if __name__ == "__main__":
     setup()
