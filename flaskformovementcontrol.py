@@ -46,30 +46,45 @@ def set_all_servos(angle):
     kit.servo[LEG4B_CHANNEL].angle = angle
     time.sleep(1)
 
-# Leg movement functions
+# Movement angles (adjusted for stronger motion)
+FORWARD_ANGLE = 45  # Increase forward reach
+BACKWARD_ANGLE = 135  # Increase backward reach
+
+# Leg movement functions (updated timing for stronger movement)
 def move_leg_forward(forward_channel, backward_channel):
     kit.servo[forward_channel].angle = FORWARD_ANGLE
     kit.servo[backward_channel].angle = DEFAULT_BACKWARD_ANGLE
-    time.sleep(0.2)
+    time.sleep(0.3)  # Adjust timing for servo to fully execute motion
 
 def move_leg_backward(forward_channel, backward_channel):
     kit.servo[forward_channel].angle = DEFAULT_FORWARD_ANGLE
     kit.servo[backward_channel].angle = BACKWARD_ANGLE
-    time.sleep(0.2)
+    time.sleep(0.3)  # Adjust timing for servo to fully execute motion
 
-# Gait functions
+# Gait functions (optimized for stronger forward movement)
 def walk_forward():
     print("Walking forward...")
     while movement_flag['forward']:
-        move_leg_forward(LEG1F_CHANNEL, LEG1B_CHANNEL)
-        move_leg_forward(LEG4F_CHANNEL, LEG4B_CHANNEL)
-        move_leg_backward(LEG2F_CHANNEL, LEG2B_CHANNEL)
-        move_leg_backward(LEG3F_CHANNEL, LEG3B_CHANNEL)
+        # Move legs in pairs: diagonal pairs move together
+        move_leg_forward(LEG1F_CHANNEL, LEG1B_CHANNEL)  # Front left forward
+        move_leg_forward(LEG4F_CHANNEL, LEG4B_CHANNEL)  # Back right forward
+        time.sleep(0.2)  # Brief pause for stability
+
+        move_leg_backward(LEG2F_CHANNEL, LEG2B_CHANNEL)  # Front right backward
+        move_leg_backward(LEG3F_CHANNEL, LEG3B_CHANNEL)  # Back left backward
+        time.sleep(0.2)  # Brief pause for stability
+
+        # Return legs to default positions to complete the step
         move_leg_backward(LEG1F_CHANNEL, LEG1B_CHANNEL)
         move_leg_backward(LEG4F_CHANNEL, LEG4B_CHANNEL)
+        time.sleep(0.2)
+
         move_leg_forward(LEG2F_CHANNEL, LEG2B_CHANNEL)
         move_leg_forward(LEG3F_CHANNEL, LEG3B_CHANNEL)
+        time.sleep(0.2)
+
         print("Step complete.")
+
 
 # Flask endpoints
 @app.route('/')
