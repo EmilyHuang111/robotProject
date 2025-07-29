@@ -347,57 +347,218 @@ def execute_robot_action(action: str):
     else:
         return "Unknown action."
 
-# ===================== UI (only 4 motion buttons + Stop, Chat, and Voice Mode) =====================
+# ===================== UI (speech bubbles + mic button) =====================
 HTML = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Robot Movement & Chat</title>
+  <meta charset="utf-8" />
+  <title>Quadruped Controller</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { text-align:center; font-family:Arial, sans-serif; max-width:900px; margin:auto; }
-    button { font-size:20px; margin:8px; padding:14px 18px; }
-    .stop-btn { background-color:#c00; color:#fff; }
-    .row { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; }
-    #chatbox { width:95%; height:260px; margin:16px auto; padding:10px; border:1px solid #ccc; overflow:auto; text-align:left; }
-    #user, #bot { margin:6px 0; }
-    #user { color:#333; }
-    #bot { color:#0a4; }
-    input[type="text"] { width:75%; padding:12px; font-size:18px; }
-    .small { font-size:14px; color:#555; }
+    :root{
+      --bg: #f4f5f7;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --shadow: 0 8px 24px rgba(0,0,0,.06);
+      --radius: 12px;
+
+      /* Neutral palette */
+      --neutral: #f1f3f5;
+      --neutral-hover: #e9ecef;
+      --neutral-border: #dfe3e8;
+      --neutral-text: #2c3e50;
+
+      /* Blue accents (for focus + assistant bubble) */
+      --blue: #2563eb;                 /* assistant bubble */
+      --blue-600: #2563eb;
+      --blue-glow: rgba(59,130,246,.35);   /* input focus ring */
+      --blue-border: #3b82f6;
+
+      /* Safety */
+      --danger: #b91c1c;
+      --danger-hover: #991b1b;
+    }
+
+    *{box-sizing:border-box}
+    body{
+      font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: linear-gradient(180deg, #f8f9fa 0%, var(--bg) 100%);
+      color: var(--text);
+      margin: 0; padding: 28px;
+      display: flex; justify-content: center;
+    }
+    .container{ width: min(1080px, 100%); display: grid; gap: 18px; }
+
+    .card{
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      border: 1px solid #eef0f2;
+      padding: 18px;
+    }
+    .header{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .title{ font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+    .controls{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px; margin-top: 12px;
+    }
+
+    /* Neutral buttons */
+    .btn{
+      appearance:none; cursor:pointer; user-select:none;
+      border:1px solid var(--neutral-border);
+      padding: 12px 14px; border-radius: 10px;
+      font-size: 16px; font-weight: 600; letter-spacing:.2px;
+      background: var(--neutral); color: var(--neutral-text);
+      transition: transform .06s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease, filter .18s ease;
+      box-shadow: 0 2px 10px rgba(0,0,0,.05);
+      outline: none;
+    }
+    .btn:hover{ background: var(--neutral-hover); transform: translateY(-1px); }
+    .btn:active{ transform: translateY(0); filter: saturate(.98); }
+    .btn:focus-visible{ box-shadow: 0 0 0 4px var(--blue-glow); border-color: var(--blue-border); }
+
+    /* Stop (safety) */
+    .btn-danger{ background: var(--danger); color:#fff; border-color: var(--danger); }
+    .btn-danger:hover{ background: var(--danger-hover); border-color: var(--danger-hover); }
+
+    /* Chat */
+    #chatbox{
+      height: 320px;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px;
+      overflow: auto;
+      background: #fcfcfd;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .row{ display:flex; gap:10px; align-items:center; }
+
+    .chat-input{
+      flex:1;
+      padding: 12px 14px;
+      border: 1px solid #dadada;
+      border-radius: 12px;
+      font-size: 16px;
+      outline:none;
+      background:#fff;
+      transition: box-shadow .18s ease, border-color .18s ease;
+    }
+    /* BLUE glow on focus */
+    .chat-input:focus{
+      border-color: var(--blue-border);
+      box-shadow: 0 0 0 4px var(--blue-glow);
+    }
+
+    /* Speech bubbles */
+    .msg{
+      max-width: 75%;
+      padding: 10px 12px;
+      border-radius: 14px;
+      line-height: 1.35;
+      word-wrap: break-word;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    }
+    .msg.user{
+      margin-left: auto;
+      background: var(--neutral);
+      color: var(--neutral-text);
+      border: 1px solid var(--neutral-border);
+    }
+    .msg.bot{
+      margin-right: auto;
+      background: var(--blue);
+      color: #ffffff;
+      border: 1px solid var(--blue-600);
+    }
+    .msg.system{
+      margin-right: auto;
+      background: #eef2ff;
+      color: #1e3a8a;
+      border: 1px solid #c7d2fe;
+    }
+
+    /* Icon buttons (send + mic) */
+    .icon-btn{
+      display: inline-flex; align-items:center; justify-content:center;
+      width: 46px; height: 46px;
+      border-radius: 50%;
+      border: 1px solid transparent;
+      background: #3a3a3a; color: #fff;
+      box-shadow: 0 2px 10px rgba(0,0,0,.10);
+      cursor: pointer;
+      transition: transform .06s ease, background .2s ease, box-shadow .2s ease, border-color .2s ease;
+      outline: none;
+    }
+    .icon-btn:hover{ background: #2f2f2f; transform: translateY(-1px); }
+    .icon-btn:active{ transform: translateY(0); }
+    .icon-btn:focus-visible{ box-shadow: 0 0 0 4px var(--blue-glow); border-color: var(--blue-border); }
+    .icon{ width: 22px; height: 22px; display:block; }
+
+    /* Mic recording state */
+    .icon-btn.mic.active{
+      background: #ef4444; /* red while recording */
+    }
   </style>
 </head>
 <body>
-  <h1>Robot Movement Control</h1>
-  <div class="row">
-    <button onclick="send('forward')">Forward</button>
-    <button onclick="send('backward')">Backward</button>
-    <button onclick="send('left')">Left</button>
-    <button onclick="send('right')">Right</button>
-    <button class="stop-btn" onclick="send('stop')">Stop</button>
-  </div>
+  <div class="container">
 
-  <h2>Chat with the Robot</h2>
-  <div id="chatbox"></div>
-  <div>
-    <input id="msg" type="text" placeholder="Type: robot forward/backward/left/right, or ask a question" />
-    <button onclick="ask()">Send</button>
-  </div>
+    <!-- Controls -->
+    <div class="card">
+      <div class="header">
+        <div class="title">Robot Movement</div>
+      </div>
+      <div class="controls">
+        <button class="btn" onclick="sendCmd('forward')">Forward</button>
+        <button class="btn" onclick="sendCmd('backward')">Backward</button>
+        <button class="btn" onclick="sendCmd('left')">Left</button>
+        <button class="btn" onclick="sendCmd('right')">Right</button>
+        <button class="btn btn-danger" onclick="sendCmd('stop')">Stop</button>
+      </div>
+    </div>
 
-  <h2>Voice Mode</h2>
-  <div class="row">
-    <button id="recStart" onclick="startRec()">Start Recording</button>
-    <button id="recStop" onclick="stopRec()">Stop Recording</button>
+    <!-- Chat -->
+    <div class="card">
+      <div class="header"><div class="title">Chat</div></div>
+      <div id="chatbox"></div>
+      <div class="row" style="margin-top:10px;">
+        <input id="msg" class="chat-input" type="text" placeholder="Ask a question or give a command" />
+        <!-- Mic button (toggle record) -->
+        <button id="micBtn" class="icon-btn mic" onclick="toggleRec()" aria-label="Record voice">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3z" stroke="white" stroke-width="2" stroke-linecap="round"/>
+            <path d="M5 11a7 7 0 0014 0M12 18v3" stroke="white" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <!-- Icon-only send button (arrow up) -->
+        <button class="icon-btn" onclick="ask()" aria-label="Send">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 19V5M12 5l-6 6M12 5l6 6" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
   </div>
-  <div class="small">Press Start, speak your command or question, then press Stop. (Best on localhost or HTTPS.)</div>
 
   <script>
-    function send(path){ fetch('/' + path); }
+    function sendCmd(path){
+      fetch('/' + path);
+      appendBubble('system', 'Executing: ' + path);
+    }
 
-    function append(role, text){
+    function appendBubble(kind, text){
       const box = document.getElementById('chatbox');
       const div = document.createElement('div');
-      div.id = role;
-      div.textContent = (role === 'user' ? 'You: ' : 'Bot: ') + text;
+      div.className = 'msg ' + (kind || 'bot');
+      div.textContent = text;
       box.appendChild(div);
       box.scrollTop = box.scrollHeight;
     }
@@ -406,50 +567,102 @@ HTML = '''
       const input = document.getElementById('msg');
       const text = input.value.trim();
       if(!text) return;
-      append('user', text);
+      appendBubble('user', text);
       input.value = '';
 
-      const resp = await fetch('/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
+      const resp = await fetch('/ask', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text})
+      });
       const data = await resp.json();
-      if (data.transcript) append('user', '[voice] ' + data.transcript);
-      if (data.robot_action) append('bot', '[Executing] ' + data.robot_action);
-      append('bot', data.reply || '(no response)');
+      if (data.robot_action) appendBubble('system', 'Executing: ' + data.robot_action);
+      appendBubble('bot', data.reply || '(no response)');
     }
 
-    // ======== Voice Mode (MediaRecorder -> /voice_ask) ========
-    let mediaRecorder, chunks = [], streamRef = null;
+    // Enter to send
+    document.getElementById('msg').addEventListener('keydown', (e)=>{
+      if(e.key === 'Enter') ask();
+    });
+
+    // ======== Voice (MediaRecorder -> /voice_ask) ========
+    let mediaRecorder = null, chunks = [], streamRef = null, recording = false;
+
+    function pickSupportedMime(){
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4' // fallback on Safari
+      ];
+      for (const t of candidates){
+        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) return t;
+      }
+      return '';
+    }
+
+    async function toggleRec(){
+      if (recording){
+        stopRec();
+      } else {
+        await startRec();
+      }
+    }
 
     async function startRec(){
+      const micBtn = document.getElementById('micBtn');
       try {
+        const mimeType = pickSupportedMime();
         streamRef = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Some browsers prefer not specifying mimeType; if you see errors, remove mimeType.
-        mediaRecorder = new MediaRecorder(streamRef, { mimeType: 'audio/webm' });
+        mediaRecorder = new MediaRecorder(streamRef, mimeType ? { mimeType } : undefined);
         chunks = [];
         mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
         mediaRecorder.onstop = async () => {
-          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const chosenType = mediaRecorder.mimeType || 'audio/webm';
+          const blob = new Blob(chunks, { type: chosenType });
           chunks = [];
-          const form = new FormData();
-          form.append('audio', blob, 'voice.webm');
-          const resp = await fetch('/voice_ask', { method: 'POST', body: form });
-          const data = await resp.json();
-          if (data.transcript) append('user', '[voice] ' + data.transcript);
-          if (data.robot_action) append('bot', '[Executing] ' + data.robot_action);
-          append('bot', data.reply || '(no response)');
+          await sendVoiceBlob(blob);
+          cleanupStream();
         };
         mediaRecorder.start();
+        recording = true;
+        micBtn.classList.add('active');
       } catch (err) {
-        append('bot', 'Microphone error: ' + err);
+        appendBubble('system', 'Microphone error: ' + err);
+        cleanupStream();
       }
     }
 
     function stopRec(){
+      const micBtn = document.getElementById('micBtn');
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
+      } else {
+        cleanupStream(); // ensure UI resets even if not recording
       }
-      if (streamRef) {
+      recording = false;
+      micBtn.classList.remove('active');
+    }
+
+    function cleanupStream(){
+      if (streamRef){
         streamRef.getTracks().forEach(t => t.stop());
         streamRef = null;
+      }
+      mediaRecorder = null;
+    }
+
+    async function sendVoiceBlob(blob){
+      const form = new FormData();
+      // filename can be generic; the browser sets the correct Content-Type for the part
+      form.append('audio', blob, 'voice');
+      try {
+        const resp = await fetch('/voice_ask', { method: 'POST', body: form });
+        const data = await resp.json();
+        if (data.transcript) appendBubble('user', data.transcript);
+        if (data.robot_action) appendBubble('system', 'Executing: ' + data.robot_action);
+        appendBubble('bot', data.reply || '(no response)');
+      } catch (e){
+        appendBubble('system', 'Voice send error: ' + e);
       }
     }
   </script>
@@ -505,6 +718,12 @@ def stop():
     setup()
     return "Stopping and parking neutral."
 
+# Neutral pose command used in parser
+@app.route('/diag_neutral')
+def diag_neutral():
+    setup()
+    return "Neutral posture set."
+
 # Text chat
 @app.route('/ask', methods=['POST'])
 def ask():
@@ -520,7 +739,7 @@ def ask():
     speak_async(reply)
     return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
 
-# Voice chat (UI present)
+# Voice chat (kept and wired to mic button)
 @app.route('/voice_ask', methods=['POST'])
 def voice_ask():
     f = request.files.get('audio')
