@@ -1,5 +1,5 @@
 from flask import Flask, render_template_string, request, jsonify
-from threading import Thread
+from threading import Thread, Event
 import time
 import os
 import re
@@ -29,6 +29,15 @@ try:
 except Exception as e:
     _openai_client = None
     print("OpenAI client not available:", e)
+
+# ===================== Global control (generation/TTS) =====================
+_generation_cancel = Event()   # set() to cancel in-flight generation
+_tts_proc = None               # mpg123 process for TTS audio
+
+def cancel_generation():
+    """Signal any in-flight generation to stop and silence TTS."""
+    _generation_cancel.set()
+    tts_stop()
 
 # ===================== Media (music) playback =====================
 _media_proc = None
@@ -76,25 +85,66 @@ def media_play_24k():
     return "Playing 24K Magic." if ok else "24K Magic file not found or could not be played."
 
 # ===================== TTS =====================
+def tts_stop():
+    """Stop any in-progress TTS playback."""
+    global _tts_proc
+    if _tts_proc is not None and _tts_proc.poll() is None:
+        try:
+            _tts_proc.terminate()
+            try:
+                _tts_proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                _tts_proc.kill()
+        except Exception as e:
+            print("tts_stop error:", e)
+    _tts_proc = None
+
 def speak_async(text: str, interrupt_music: bool = True):
     """Speak text in the background using gTTS + mpg123.
 
     interrupt_music=True  -> stop any music before speaking (default)
     interrupt_music=False -> do NOT stop music (use when music should keep playing)
+    Respects _generation_cancel: if set before speaking starts, does nothing.
     """
     if not text:
         return
+
     def _run():
+        global _tts_proc
         try:
+            # If canceled before starting, skip.
+            if _generation_cancel.is_set():
+                return
+
             if interrupt_music:
                 media_stop()
+
+            # Synthesize to temp mp3
             tts = gTTS(text=text, lang='en')
             with tempfile.NamedTemporaryFile(delete=True, suffix='.mp3') as fp:
                 tts.save(fp.name)
-                subprocess.run(['mpg123', '-q', fp.name],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                # If canceled after synth but before play, skip.
+                if _generation_cancel.is_set():
+                    return
+
+                _tts_proc = subprocess.Popen(
+                    ['mpg123', '-q', fp.name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                # While playing, watch for cancel
+                while True:
+                    if _tts_proc.poll() is not None:
+                        break
+                    if _generation_cancel.is_set():
+                        tts_stop()
+                        break
+                    time.sleep(0.05)
         except Exception as e:
             print("TTS error:", e)
+        finally:
+            _tts_proc = None
+
     Thread(target=_run, daemon=True).start()
 
 # ===================== Language model =====================
@@ -218,19 +268,6 @@ def _current_angle(ch, default_raw, invert_map):
     a = kit.servo[ch].angle
     return int(a) if a is not None else _apply_invert(ch, default_raw, invert_map)
 
-def _ramp_to(ch, target_raw, invert_map, step=RAMP_STEP, delay=RAMP_DELAY):
-    target = _apply_invert(ch, target_raw, invert_map)
-    cur = _current_angle(ch, target_raw, invert_map)
-    if cur == target:
-        kit.servvo[ch].angle = target  # typo prevented; corrected below
-        return
-    sgn = 1 if target > cur else -1
-    for a in range(cur, target, sgn * step):
-        kit.servo[ch].angle = a
-        time.sleep(delay)
-    kit.servo[ch].angle = target
-
-# (Fix the small typo above — correct function:)
 def _ramp_to(ch, target_raw, invert_map, step=RAMP_STEP, delay=RAMP_DELAY):
     target = _apply_invert(ch, target_raw, invert_map)
     cur = _current_angle(ch, target_raw, invert_map)
@@ -387,15 +424,21 @@ def turn_right_loop():
     setup(); print("Right turn stopped.")
 
 # ===================== Natural-language parsing =====================
-# NOTE: Order matters. Put music-specific "stop music" before generic "stop".
+# NOTE: Order matters. Put media/gen-specific before generic "stop".
 COMMAND_PATTERNS = [
+    # --- Generation / TTS control ---
+    (r'\b(stop|cancel|quiet|shut\s*up)\b.*\b(speaking|talking|voice|tts|response|reply|generate|generating)\b',
+        lambda: ('gen/stop',)),
+    # allow plain "stop" to also stop generating
+    # (we will handle both robot stop and gen stop on 'stop' below)
+
     # --- Music control ---
     (r'\b(stop|pause|halt)\b.*\b(music|song|audio|playback)\b', lambda: ('media/stop',)),
     (r'\bplay\b.*\b(24\s?k|twenty[\s-]*four\s?k)\b.*\bmagic\b', lambda: ('media/play_24k',)),
     (r'\bplay\b.*\bmagic\b.*\b(24\s?k|twenty[\s-]*four\s?k)\b', lambda: ('media/play_24k',)),
 
     # --- Robot motion ---
-    (r'\b(stop|halt|park)\b',                        lambda: ('stop',)),
+    (r'\b(stop|halt|park)\b',                        lambda: ('stop',)),  # also triggers gen/stop
     (r'\b(trot sync|sync trot|locked trot)\b',       lambda: ('forward',)),  # map to forward
     (r'\bforward\b',                                 lambda: ('forward',)),
     (r'\bbackward|reverse\b',                        lambda: ('backward',)),
@@ -414,13 +457,22 @@ def parse_robot_command(text: str):
     return None
 
 def execute_robot_action(action: str):
+    # Generation stop
+    if action == 'gen/stop':
+        cancel_generation()
+        return "Stopped speaking."
+
+    # Music control
     if action == 'media/play_24k':
         return media_play_24k()
     if action == 'media/stop':
         media_stop()
         return "Stopped music."
 
+    # Robot control
     if action == 'stop':
+        # ALSO cancel any speaking/generation when user says 'stop'
+        cancel_generation()
         return stop()
     elif action == 'forward':
         return forward()
@@ -582,7 +634,7 @@ HTML = '''
       box-shadow: 0 2px 10px rgba(0,0,0,.10);
       cursor: pointer;
       transition: transform .06s ease, background .2s ease, box-shadow .2s ease, border-color .2s ease;
-      outline: none.
+      outline: none;
     }
     .icon-btn:hover{ background: #2f2f2f; transform: translateY(-1px); }
     .icon-btn:active{ transform: translateY(0); }
@@ -821,29 +873,39 @@ def media_stop_route():
     media_stop()
     return "Stopped music."
 
-# ===================== Chat endpoints (with media-aware logic) =====================
+# ===================== Chat endpoints (media/gen-aware) =====================
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True, silent=True) or {}
     text = (data.get('text') or "").strip()
+
+    # New request: clear cancel flag
+    _generation_cancel.clear()
 
     action = parse_robot_command(text)
     robot_msg = None
     if action:
         robot_msg = execute_robot_action(action)
 
+        # If it's a generation stop, return immediately.
+        if action == 'gen/stop':
+            return jsonify({"reply": robot_msg, "robot_action": action, "robot_message": robot_msg})
+
         # If it's a media command, DO NOT call the language model.
         if action.startswith('media/'):
             reply = robot_msg or "OK."
-            # For stop, we can confirm without interrupting anything further.
             if action == 'media/stop':
-                speak_async(reply, interrupt_music=False)
-            # For play, stay silent (or uncomment to speak quietly):
-            # speak_async("Playing 24K Magic.", interrupt_music=False)
+                speak_async(reply, interrupt_music=False)  # optional confirmation
+            # For play, stay silent to avoid interrupting music
             return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
 
-    # Non-media commands: proceed with the model and normal TTS
+    # Non-media: proceed with the model
     reply = lm_reply(text)
+
+    # If canceled while the model was working, do not speak; return a short notice.
+    if _generation_cancel.is_set():
+        return jsonify({"reply": "(stopped)", "robot_action": action, "robot_message": robot_msg})
+
     speak_async(reply, interrupt_music=True)
     return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
 
@@ -852,6 +914,9 @@ def voice_ask():
     f = request.files.get('audio')
     if not f:
         return jsonify({"error": "No audio provided"}), 400
+
+    # New request: clear cancel flag
+    _generation_cancel.clear()
 
     audio_bytes = f.read()
     mimetype = f.mimetype or "audio/webm"
@@ -867,23 +932,31 @@ def voice_ask():
     if action:
         robot_msg = execute_robot_action(action)
 
+        if action == 'gen/stop':
+            return jsonify({"transcript": transcript, "reply": robot_msg,
+                            "robot_action": action, "robot_message": robot_msg})
+
         if action.startswith('media/'):
             reply = robot_msg or "OK."
             if action == 'media/stop':
                 speak_async(reply, interrupt_music=False)
-            # For play, skip TTS so the song keeps playing
             return jsonify({"transcript": transcript, "reply": reply,
                             "robot_action": action, "robot_message": robot_msg})
 
     # Non-media: normal LM + TTS
     reply = lm_reply(transcript)
+
+    if _generation_cancel.is_set():
+        return jsonify({"transcript": transcript, "reply": "(stopped)",
+                        "robot_action": action, "robot_message": robot_msg})
+
     speak_async(reply, interrupt_music=True)
     return jsonify({"transcript": transcript, "reply": reply,
                     "robot_action": action, "robot_message": robot_msg})
 
 # ===================== Main =====================
 if __name__ == "__main__":
-    # Make sure the default media directory exists if using default path
+    # Ensure default media directory exists (if using default path)
     try:
         default_dir = os.path.dirname(os.path.expanduser(SONG_24K_PATH))
         if default_dir and not os.path.exists(default_dir):
