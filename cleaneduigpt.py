@@ -308,7 +308,7 @@ def serp_weather(location: str) -> str:
     if desc:
         parts.append(desc)
     if precip:
-        parts.append(f"Precip: {precip}")
+        parts.append(f"Precipitation: {precip}")
     if humidity:
         parts.append(f"Humidity: {humidity}")
     if wind:
