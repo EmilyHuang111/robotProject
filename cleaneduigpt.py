@@ -11,18 +11,17 @@ import signal
 from adafruit_servokit import ServoKit
 from gtts import gTTS
 
-# ===================== Keys / Config =====================
+
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 if not DEEPGRAM_API_KEY:
     print("[WARN] DEEPGRAM_API_KEY not set; set it with: export DEEPGRAM_API_KEY='YOUR_KEY'")
 
-# Path to local audio of 24K Magic (username-agnostic default)
-# You can override at runtime with: export SONG_24K_PATH="~/media/24k_magic.mp3"
+
 SONG_24K_PATH = os.path.expanduser(
     os.environ.get("SONG_24K_PATH", os.path.join("~", "media", "24k_magic.mp3"))
 )
 
-# OpenAI client (uses the modern SDK)
+
 try:
     from openai import OpenAI
     _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
