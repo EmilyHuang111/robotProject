@@ -15,25 +15,24 @@ except Exception as e:
     _openai_client = None
     print("OpenAI client not available:", e)
 
-# Text-to-speech (local, uses espeak/espeak-ng under the hood)
-try:
-    import pyttsx3
-    tts_engine = pyttsx3.init()
-    tts_engine.setProperty('rate', 180)  # adjust to taste
-except Exception as e:
-    tts_engine = None
-    print("TTS not available:", e)
+import subprocess
+
+from gtts import gTTS
+import tempfile
 
 def speak_async(text: str):
-    if not tts_engine or not text:
+    if not text:
         return
     def _run():
         try:
-            tts_engine.say(text)
-            tts_engine.runAndWait()
-        except Exception as _:
-            pass
+            tts = gTTS(text=text, lang='en')
+            with tempfile.NamedTemporaryFile(delete=True, suffix='.mp3') as fp:
+                tts.save(fp.name)
+                subprocess.run(['mpg123', fp.name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print("TTS error:", e)
     Thread(target=_run, daemon=True).start()
+
 
 def lm_reply(user_text: str) -> str:
     """
