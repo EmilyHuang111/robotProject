@@ -3,10 +3,18 @@ from threading import Thread
 import time
 import os
 import re
+import subprocess
+import tempfile
+import requests
 
 from adafruit_servokit import ServoKit
+from gtts import gTTS
 
-# ===================== (NEW) Language model + TTS =====================
+# ===================== Keys / Config =====================
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
+if not DEEPGRAM_API_KEY:
+    print("[WARN] DEEPGRAM_API_KEY not set; set it with: export DEEPGRAM_API_KEY='YOUR_KEY'")
+
 # OpenAI client (uses the modern SDK)
 try:
     from openai import OpenAI
@@ -15,12 +23,9 @@ except Exception as e:
     _openai_client = None
     print("OpenAI client not available:", e)
 
-import subprocess
-
-from gtts import gTTS
-import tempfile
-
+# ===================== TTS =====================
 def speak_async(text: str):
+    """Speak text in the background using gTTS + mpg123."""
     if not text:
         return
     def _run():
@@ -28,12 +33,13 @@ def speak_async(text: str):
             tts = gTTS(text=text, lang='en')
             with tempfile.NamedTemporaryFile(delete=True, suffix='.mp3') as fp:
                 tts.save(fp.name)
-                subprocess.run(['mpg123', fp.name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(['mpg123', fp.name],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             print("TTS error:", e)
     Thread(target=_run, daemon=True).start()
 
-
+# ===================== Language model =====================
 def lm_reply(user_text: str) -> str:
     """
     Send user_text to the language model and return assistant's reply.
@@ -56,12 +62,54 @@ def lm_reply(user_text: str) -> str:
     except Exception as e:
         return f"Error contacting language model: {e}"
 
+# ===================== Deepgram STT =====================
+def deepgram_transcribe(audio_bytes: bytes, mimetype: str = "audio/webm") -> str:
+    """
+    Send audio bytes to Deepgram's /v1/listen endpoint and return the transcript text.
+    """
+    if not DEEPGRAM_API_KEY:
+        return ""
+
+    url = "https://api.deepgram.com/v1/listen"
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": mimetype
+    }
+    # Model/params chosen for general English, punctuation, and formatting.
+    params = {
+        "model": "nova-2",
+        "smart_format": "true",
+        "language": "en-US",
+        "punctuate": "true"
+    }
+
+    try:
+        r = requests.post(url, headers=headers, params=params, data=audio_bytes, timeout=30)
+        r.raise_for_status()
+        jd = r.json()
+
+        # Try common Deepgram response shapes
+        # Shape 1: results -> channels -> [0] -> alternatives -> [0] -> transcript
+        try:
+            return jd["results"]["channels"][0]["alternatives"][0]["transcript"].strip()
+        except Exception:
+            pass
+
+        # Shape 2: top-level transcript key (fallback)
+        if isinstance(jd, dict) and "transcript" in jd:
+            return (jd["transcript"] or "").strip()
+
+        # If nothing found:
+        return ""
+    except Exception as e:
+        print("Deepgram error:", e)
+        return ""
+
 # ===================== Flask & ServoKit =====================
 app = Flask(__name__)
 kit = ServoKit(channels=16)
 
 # ===================== Channel Mapping (your wiring) =====================
-# Original labels from your code
 LEG1F_CHANNEL = 0   # Front Left - HIP (forward/back swing)
 LEG1B_CHANNEL = 1   # Front Left - KNEE (lift/lower)
 LEG2F_CHANNEL = 8   # Front Right - HIP
@@ -71,7 +119,6 @@ LEG3B_CHANNEL = 3   # Back Left - KNEE
 LEG4F_CHANNEL = 10  # Back Right - HIP
 LEG4B_CHANNEL = 11  # Back Right - KNEE
 
-# Semantic names
 LF_HIP, LF_KNEE = LEG1F_CHANNEL, LEG1B_CHANNEL  # Left Front
 RF_HIP, RF_KNEE = LEG2F_CHANNEL, LEG2B_CHANNEL  # Right Front
 LR_HIP, LR_KNEE = LEG3F_CHANNEL, LEG3B_CHANNEL  # Left Rear
@@ -148,7 +195,7 @@ def _ramp_sync(ch_list, target_raw_list, invert_map, step=RAMP_STEP, delay=RAMP_
     for _ in range(max_steps):
         for idx, ch in enumerate(ch_list):
             c = curs[idx]; t = targs[idx]
-            if c == t: 
+            if c == t:
                 continue
             sgn = 1 if t > c else -1
             move = min(step, abs(t - c))
@@ -350,7 +397,49 @@ def turn_right_loop():
         hips_all(HIP_NEUTRAL); time.sleep(DWELL*0.5)
     setup(); print("Right turn stopped.")
 
-# ===================== Flask UI (UPDATED) =====================
+# ===================== Natural-language command parsing =====================
+COMMAND_PATTERNS = [
+    (r'\b(stop|halt|park)\b',                        lambda: ('stop',)),
+    (r'\b(trot sync|sync trot|locked trot)\b',       lambda: ('trot_sync',)),
+    (r'\b(trot)\b',                                  lambda: ('trot',)),
+    (r'\bforward\b',                                 lambda: ('forward',)),
+    (r'\bbackward|reverse\b',                        lambda: ('backward',)),
+    (r'\bleft\b',                                    lambda: ('left',)),
+    (r'\bright\b',                                   lambda: ('right',)),
+    (r'\bneutral|home|reset\b',                      lambda: ('diag/neutral',)),
+]
+
+def parse_robot_command(text: str):
+    text = (text or "").lower().strip()
+    # Allow commands with or without "robot" prefix.
+    if text.startswith("robot "):
+        text = text.split(" ", 1)[1]
+    for pattern, builder in COMMAND_PATTERNS:
+        if re.search(pattern, text):
+            return builder()[0]
+    return None
+
+def execute_robot_action(action: str):
+    if action == 'stop':
+        return stop()
+    elif action == 'forward':
+        return forward()
+    elif action == 'backward':
+        return backward()
+    elif action == 'left':
+        return left()
+    elif action == 'right':
+        return right()
+    elif action == 'trot_sync':
+        return trot_sync()
+    elif action == 'trot':
+        return trot()
+    elif action == 'diag/neutral':
+        return diag_neutral()
+    else:
+        return "Unknown action."
+
+# ===================== Flask UI (UPDATED with Voice Mode) =====================
 HTML = '''
 <!DOCTYPE html>
 <html>
@@ -366,6 +455,7 @@ HTML = '''
     #user { color:#333; }
     #bot { color:#0a4; }
     input[type="text"] { width:75%; padding:12px; font-size:18px; }
+    .small { font-size:14px; color:#555; }
   </style>
 </head>
 <body>
@@ -398,6 +488,13 @@ HTML = '''
     <button onclick="ask()">Send</button>
   </div>
 
+  <h2>Voice Mode</h2>
+  <div class="row">
+    <button id="recStart" onclick="startRec()">Start Recording</button>
+    <button id="recStop" onclick="stopRec()">Stop Recording</button>
+  </div>
+  <div class="small">Press Start, speak your question or command, then press Stop. (Works best on localhost/HTTPS.)</div>
+
   <h3>Diagnostics</h3>
   <div class="row">
     <button onclick="send('diag/neutral')">Neutral Pose</button>
@@ -428,6 +525,43 @@ HTML = '''
       const data = await resp.json();
       if (data.robot_action) append('bot', '[Executing] ' + data.robot_action);
       append('bot', data.reply || '(no response)');
+    }
+
+    // ======== Voice Mode (MediaRecorder -> /voice_ask) ========
+    let mediaRecorder, chunks = [], streamRef = null;
+
+    async function startRec(){
+      try {
+        streamRef = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(streamRef, { mimeType: 'audio/webm' });
+        chunks = [];
+        mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          chunks = [];
+          // Send to server
+          const form = new FormData();
+          form.append('audio', blob, 'voice.webm');
+          const resp = await fetch('/voice_ask', { method: 'POST', body: form });
+          const data = await resp.json();
+          if (data.transcript) append('user', '[voice] ' + data.transcript);
+          if (data.robot_action) append('bot', '[Executing] ' + data.robot_action);
+          append('bot', data.reply || '(no response)');
+        };
+        mediaRecorder.start();
+      } catch (err) {
+        append('bot', 'Microphone error: ' + err);
+      }
+    }
+
+    function stopRec(){
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      }
+      if (streamRef) {
+        streamRef.getTracks().forEach(t => t.stop());
+        streamRef = null;
+      }
     }
   </script>
 </body>
@@ -522,72 +656,50 @@ def stop():
     setup()
     return "Stopping and parking neutral."
 
-# ===================== (NEW) Natural-language command parsing =====================
-COMMAND_PATTERNS = [
-    (r'\b(stop|halt|park)\b',                        lambda: ('stop',)),
-    (r'\b(trot sync|sync trot|locked trot)\b',       lambda: ('trot_sync',)),
-    (r'\b(trot)\b',                                  lambda: ('trot',)),
-    (r'\bforward\b',                                 lambda: ('forward',)),
-    (r'\bbackward|reverse\b',                        lambda: ('backward',)),
-    (r'\bleft\b',                                    lambda: ('left',)),
-    (r'\bright\b',                                   lambda: ('right',)),
-    (r'\bneutral|home|reset\b',                      lambda: ('diag/neutral',)),
-]
-
-def parse_robot_command(text: str):
-    text = (text or "").lower().strip()
-    # Only parse if user intends to command robot, e.g., starts with "robot"
-    if text.startswith("robot "):
-        text = text.split(" ", 1)[1]
-    elif not text.startswith("robot"):
-        # Still allow obvious commands even without the prefix
-        pass
-
-    for pattern, builder in COMMAND_PATTERNS:
-        if re.search(pattern, text):
-            return builder()[0]
-    return None
-
-def execute_robot_action(action: str):
-    # Map action string to the same routes you already expose
-    if action == 'stop':
-        return stop()
-    elif action == 'forward':
-        return forward()
-    elif action == 'backward':
-        return backward()
-    elif action == 'left':
-        return left()
-    elif action == 'right':
-        return right()
-    elif action == 'trot_sync':
-        return trot_sync()
-    elif action == 'trot':
-        return trot()
-    elif action == 'diag/neutral':
-        return diag_neutral()
-    else:
-        return "Unknown action."
-
-# ===================== (NEW) Chat endpoint =====================
+# ===================== Text Chat endpoint =====================
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True, silent=True) or {}
     text = (data.get('text') or "").strip()
 
-    # 1) Try to detect and execute robot commands
     action = parse_robot_command(text)
     robot_msg = None
     if action:
         robot_msg = execute_robot_action(action)
 
-    # 2) Get a model reply (general question or confirmation/assist)
     reply = lm_reply(text)
-
-    # 3) Speak the reply aloud
     speak_async(reply)
-
     return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
+
+# ===================== Voice Chat endpoint =====================
+@app.route('/voice_ask', methods=['POST'])
+def voice_ask():
+    """
+    Accepts a recorded audio blob (audio/webm) from the browser,
+    transcribes it with Deepgram, runs through the same pipeline,
+    and returns transcript + LM reply.
+    """
+    f = request.files.get('audio')
+    if not f:
+        return jsonify({"error": "No audio provided"}), 400
+
+    audio_bytes = f.read()
+    mimetype = f.mimetype or "audio/webm"
+
+    transcript = deepgram_transcribe(audio_bytes, mimetype=mimetype)
+    if not transcript:
+        reply = "I didn't catch that. Please try again."
+        speak_async(reply)
+        return jsonify({"transcript": "", "reply": reply, "robot_action": None})
+
+    action = parse_robot_command(transcript)
+    robot_msg = None
+    if action:
+        robot_msg = execute_robot_action(action)
+
+    reply = lm_reply(transcript)
+    speak_async(reply)
+    return jsonify({"transcript": transcript, "reply": reply, "robot_action": action, "robot_message": robot_msg})
 
 # ===================== Main =====================
 if __name__ == "__main__":
