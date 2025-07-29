@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import requests
+import signal
 
 from adafruit_servokit import ServoKit
 from gtts import gTTS
@@ -15,6 +16,12 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 if not DEEPGRAM_API_KEY:
     print("[WARN] DEEPGRAM_API_KEY not set; set it with: export DEEPGRAM_API_KEY='YOUR_KEY'")
 
+# Path to local audio of 24K Magic (username-agnostic default)
+# You can override at runtime with: export SONG_24K_PATH="~/media/24k_magic.mp3"
+SONG_24K_PATH = os.path.expanduser(
+    os.environ.get("SONG_24K_PATH", os.path.join("~", "media", "24k_magic.mp3"))
+)
+
 # OpenAI client (uses the modern SDK)
 try:
     from openai import OpenAI
@@ -23,17 +30,68 @@ except Exception as e:
     _openai_client = None
     print("OpenAI client not available:", e)
 
+# ===================== Media (music) playback =====================
+_media_proc = None
+
+def media_is_playing() -> bool:
+    global _media_proc
+    return _media_proc is not None and _media_proc.poll() is None
+
+def media_stop():
+    """Stop any currently playing media."""
+    global _media_proc
+    if _media_proc is not None and _media_proc.poll() is None:
+        try:
+            _media_proc.terminate()
+            try:
+                _media_proc.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                _media_proc.kill()
+        except Exception as e:
+            print("media_stop error:", e)
+    _media_proc = None
+
+def media_play_file(path: str):
+    """Play a file with mpg123 (non-blocking)."""
+    global _media_proc
+    media_stop()  # stop any previous playback
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        print(f"[MEDIA] File not found: {path}")
+        return False
+    try:
+        _media_proc = subprocess.Popen(
+            ['mpg123', '-q', path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return True
+    except Exception as e:
+        print("media_play_file error:", e)
+        _media_proc = None
+        return False
+
+def media_play_24k():
+    ok = media_play_file(SONG_24K_PATH)
+    return "Playing 24K Magic." if ok else "24K Magic file not found or could not be played."
+
 # ===================== TTS =====================
-def speak_async(text: str):
-    """Speak text in the background using gTTS + mpg123."""
+def speak_async(text: str, interrupt_music: bool = True):
+    """Speak text in the background using gTTS + mpg123.
+
+    interrupt_music=True  -> stop any music before speaking (default)
+    interrupt_music=False -> do NOT stop music (use when music should keep playing)
+    """
     if not text:
         return
     def _run():
         try:
+            if interrupt_music:
+                media_stop()
             tts = gTTS(text=text, lang='en')
             with tempfile.NamedTemporaryFile(delete=True, suffix='.mp3') as fp:
                 tts.save(fp.name)
-                subprocess.run(['mpg123', fp.name],
+                subprocess.run(['mpg123', '-q', fp.name],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
             print("TTS error:", e)
@@ -48,7 +106,11 @@ def lm_reply(user_text: str) -> str:
             model="gpt-4o-mini",
             messages=[
                 {"role": "system",
-                 "content": "You are a helpful, concise assistant controlling a small quadruped robot. Keep replies short."},
+                 "content":
+                    "You are a concise assistant for a quadruped robot. "
+                    "Robot motion and media playback are handled by the app; "
+                    "do not lecture about streaming or licensing; keep confirmations brief."
+                 },
                 {"role": "user", "content": user_text},
             ],
             temperature=0.4,
@@ -156,6 +218,19 @@ def _current_angle(ch, default_raw, invert_map):
     a = kit.servo[ch].angle
     return int(a) if a is not None else _apply_invert(ch, default_raw, invert_map)
 
+def _ramp_to(ch, target_raw, invert_map, step=RAMP_STEP, delay=RAMP_DELAY):
+    target = _apply_invert(ch, target_raw, invert_map)
+    cur = _current_angle(ch, target_raw, invert_map)
+    if cur == target:
+        kit.servvo[ch].angle = target  # typo prevented; corrected below
+        return
+    sgn = 1 if target > cur else -1
+    for a in range(cur, target, sgn * step):
+        kit.servo[ch].angle = a
+        time.sleep(delay)
+    kit.servo[ch].angle = target
+
+# (Fix the small typo above — correct function:)
 def _ramp_to(ch, target_raw, invert_map, step=RAMP_STEP, delay=RAMP_DELAY):
     target = _apply_invert(ch, target_raw, invert_map)
     cur = _current_angle(ch, target_raw, invert_map)
@@ -312,7 +387,14 @@ def turn_right_loop():
     setup(); print("Right turn stopped.")
 
 # ===================== Natural-language parsing =====================
+# NOTE: Order matters. Put music-specific "stop music" before generic "stop".
 COMMAND_PATTERNS = [
+    # --- Music control ---
+    (r'\b(stop|pause|halt)\b.*\b(music|song|audio|playback)\b', lambda: ('media/stop',)),
+    (r'\bplay\b.*\b(24\s?k|twenty[\s-]*four\s?k)\b.*\bmagic\b', lambda: ('media/play_24k',)),
+    (r'\bplay\b.*\bmagic\b.*\b(24\s?k|twenty[\s-]*four\s?k)\b', lambda: ('media/play_24k',)),
+
+    # --- Robot motion ---
     (r'\b(stop|halt|park)\b',                        lambda: ('stop',)),
     (r'\b(trot sync|sync trot|locked trot)\b',       lambda: ('forward',)),  # map to forward
     (r'\bforward\b',                                 lambda: ('forward',)),
@@ -332,6 +414,12 @@ def parse_robot_command(text: str):
     return None
 
 def execute_robot_action(action: str):
+    if action == 'media/play_24k':
+        return media_play_24k()
+    if action == 'media/stop':
+        media_stop()
+        return "Stopped music."
+
     if action == 'stop':
         return stop()
     elif action == 'forward':
@@ -418,7 +506,7 @@ HTML = '''
       outline: none;
     }
     .btn:hover{ background: var(--neutral-hover); transform: translateY(-1px); }
-    .btn:active{ transform: translateY(0); filter: saturate(.98); }
+    .btn:active{ transform: translateY(0); }
     .btn:focus-visible{ box-shadow: 0 0 0 4px var(--blue-glow); border-color: var(--blue-border); }
 
     /* Stop (safety) */
@@ -494,7 +582,7 @@ HTML = '''
       box-shadow: 0 2px 10px rgba(0,0,0,.10);
       cursor: pointer;
       transition: transform .06s ease, background .2s ease, box-shadow .2s ease, border-color .2s ease;
-      outline: none;
+      outline: none.
     }
     .icon-btn:hover{ background: #2f2f2f; transform: translateY(-1px); }
     .icon-btn:active{ transform: translateY(0); }
@@ -637,7 +725,7 @@ HTML = '''
       if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
       } else {
-        cleanupStream(); // ensure UI resets even if not recording
+        cleanupStream();
       }
       recording = false;
       micBtn.classList.remove('active');
@@ -653,7 +741,6 @@ HTML = '''
 
     async function sendVoiceBlob(blob){
       const form = new FormData();
-      // filename can be generic; the browser sets the correct Content-Type for the part
       form.append('audio', blob, 'voice');
       try {
         const resp = await fetch('/voice_ask', { method: 'POST', body: form });
@@ -724,7 +811,17 @@ def diag_neutral():
     setup()
     return "Neutral posture set."
 
-# Text chat
+# ----- Music routes (optional) -----
+@app.route('/media_play_24k')
+def media_play_24k_route():
+    return media_play_24k()
+
+@app.route('/media_stop')
+def media_stop_route():
+    media_stop()
+    return "Stopped music."
+
+# ===================== Chat endpoints (with media-aware logic) =====================
 @app.route('/ask', methods=['POST'])
 def ask():
     data = request.get_json(force=True, silent=True) or {}
@@ -735,11 +832,21 @@ def ask():
     if action:
         robot_msg = execute_robot_action(action)
 
+        # If it's a media command, DO NOT call the language model.
+        if action.startswith('media/'):
+            reply = robot_msg or "OK."
+            # For stop, we can confirm without interrupting anything further.
+            if action == 'media/stop':
+                speak_async(reply, interrupt_music=False)
+            # For play, stay silent (or uncomment to speak quietly):
+            # speak_async("Playing 24K Magic.", interrupt_music=False)
+            return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
+
+    # Non-media commands: proceed with the model and normal TTS
     reply = lm_reply(text)
-    speak_async(reply)
+    speak_async(reply, interrupt_music=True)
     return jsonify({"reply": reply, "robot_action": action, "robot_message": robot_msg})
 
-# Voice chat (kept and wired to mic button)
 @app.route('/voice_ask', methods=['POST'])
 def voice_ask():
     f = request.files.get('audio')
@@ -752,7 +859,7 @@ def voice_ask():
     transcript = deepgram_transcribe(audio_bytes, mimetype=mimetype)
     if not transcript:
         reply = "I didn't catch that. Please try again."
-        speak_async(reply)
+        speak_async(reply, interrupt_music=True)
         return jsonify({"transcript": "", "reply": reply, "robot_action": None})
 
     action = parse_robot_command(transcript)
@@ -760,12 +867,30 @@ def voice_ask():
     if action:
         robot_msg = execute_robot_action(action)
 
+        if action.startswith('media/'):
+            reply = robot_msg or "OK."
+            if action == 'media/stop':
+                speak_async(reply, interrupt_music=False)
+            # For play, skip TTS so the song keeps playing
+            return jsonify({"transcript": transcript, "reply": reply,
+                            "robot_action": action, "robot_message": robot_msg})
+
+    # Non-media: normal LM + TTS
     reply = lm_reply(transcript)
-    speak_async(reply)
-    return jsonify({"transcript": transcript, "reply": reply, "robot_action": action, "robot_message": robot_msg})
+    speak_async(reply, interrupt_music=True)
+    return jsonify({"transcript": transcript, "reply": reply,
+                    "robot_action": action, "robot_message": robot_msg})
 
 # ===================== Main =====================
 if __name__ == "__main__":
+    # Make sure the default media directory exists if using default path
+    try:
+        default_dir = os.path.dirname(os.path.expanduser(SONG_24K_PATH))
+        if default_dir and not os.path.exists(default_dir):
+            os.makedirs(default_dir, exist_ok=True)
+    except Exception as e:
+        print("Warning: could not ensure media directory:", e)
+
     setup()
     # Optional: per-servo calibration
     # for ch in [LF_HIP, RF_HIP, LR_HIP, RR_HIP, LF_KNEE, RF_KNEE, LR_KNEE, RR_KNEE]:
